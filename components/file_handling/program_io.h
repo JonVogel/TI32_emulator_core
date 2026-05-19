@@ -219,6 +219,46 @@ namespace progio
   // 0x00" variants (different writers use different conventions).
   bool loadProgramBytes(const uint8_t* buf, int size,
                         const LineSink& dst, int maxTokens);
+
+  // ---------------------------------------------------------------------------
+  // Device-to-device file copy. Handles all 9 (source, destination)
+  // combinations across {FLASH, SDCARD, DSK}. Source path uses the
+  // smart .bas fallback resolveExistingPath() does on flat filesystems;
+  // destination path is literal (no .bas auto-append — caller chooses).
+  // ---------------------------------------------------------------------------
+  enum CopyStatus : uint8_t
+  {
+    COPY_OK              = 0,
+    COPY_BAD_SRC         = 1,   // source spec didn't parse
+    COPY_BAD_DST         = 2,   // dest spec didn't parse
+    COPY_SD_NOT_PRESENT  = 3,   // SD requested but not mounted
+    COPY_NOT_MOUNTED     = 4,   // DSK<n> requested but not mounted
+    COPY_NOT_FOUND       = 5,   // source file doesn't exist
+    COPY_READ_FAILED     = 6,   // I/O error during read
+    COPY_WRITE_FAILED    = 7,   // I/O error during write
+    COPY_OUT_OF_MEMORY   = 8,   // alloc failed (DSK paths need a buffer)
+    COPY_DST_READONLY    = 9,   // DSK image is mounted read-only
+  };
+
+  // Copy a file from one BASIC-style device spec to another. Specs
+  // are the same form SAVE/OLD accept: "FLASH.NAME", "SDCARD.NAME",
+  // "DSKn.NAME", or a bare "NAME" (treated as FLASH).
+  //
+  // FS->FS copies stream in 4 KB chunks (no full-file buffer). Any
+  // path involving a DSK image (read or write) buffers the file in
+  // RAM, since the V9T9 image library is whole-file at a time. That
+  // bounds DSK-touching copies to roughly the max V9T9 file size
+  // (~32 KB on a SSSD image).
+  //
+  // For DSK destinations the catalog entry's type flag is set to 0x01
+  // (PROGRAM), since plain binary copies don't carry TI-specific type
+  // info. Use writeRawFile directly if you need DIS/VAR / INT/FIX.
+  CopyStatus copyFile(const char* srcSpec, const char* dstSpec);
+
+  // Human-readable name for a CopyStatus. Returns a const string;
+  // never NULL. Useful for printing "* <reason>" at the BASIC prompt
+  // or for JSON errors from a web endpoint.
+  const char* copyStatusMessage(CopyStatus s);
 }
 
 #endif // PROGRAM_IO_H

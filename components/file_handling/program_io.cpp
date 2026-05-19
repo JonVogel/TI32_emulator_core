@@ -1,6 +1,183 @@
 // program_io.cpp — see program_io.h for design notes.
 
 #include "program_io.h"
+#include "file_io.h"
+#include "dsk_image.h"
+#include <LittleFS.h>
+#include <SD_MMC.h>
+
+namespace progio
+{
+  // ---------------------------------------------------------------------------
+  // Device-aware file copy. Helpers below resolve the source and
+  // destination handles for each device kind, then either stream (FS-only
+  // paths) or buffer (anything touching a DSK image).
+  // ---------------------------------------------------------------------------
+
+  static fs::FS* fsForFlatKind(Kind k)
+  {
+    switch (k)
+    {
+      case KIND_FLASH:  return &LittleFS;
+      case KIND_SDCARD: return fio::g_sdOk ? &SD_MMC : nullptr;
+      default:          return nullptr;
+    }
+  }
+
+  // FS-to-FS copy. Streams 4 KB chunks, no full-file allocation.
+  static CopyStatus copyFsToFs(const Target& src, const Target& dst)
+  {
+    fs::FS* srcFs = fsForFlatKind(src.kind);
+    fs::FS* dstFs = fsForFlatKind(dst.kind);
+    if (!srcFs) return src.kind == KIND_SDCARD ? COPY_SD_NOT_PRESENT : COPY_BAD_SRC;
+    if (!dstFs) return dst.kind == KIND_SDCARD ? COPY_SD_NOT_PRESENT : COPY_BAD_DST;
+
+    char srcPath[64];
+    if (!resolveExistingPath(*srcFs, src.name, srcPath, sizeof(srcPath)))
+    {
+      return COPY_NOT_FOUND;
+    }
+
+    char dstPath[64];
+    // Literal dest path — no .bas auto-append. If the user wants .bas
+    // they include it explicitly in the dest spec.
+    snprintf(dstPath, sizeof(dstPath), "/%s", dst.name);
+
+    File in  = srcFs->open(srcPath, "r");
+    if (!in) return COPY_READ_FAILED;
+    File out = dstFs->open(dstPath, "w");
+    if (!out) { in.close(); return COPY_WRITE_FAILED; }
+
+    uint8_t buf[4096];
+    CopyStatus status = COPY_OK;
+    while (in.available())
+    {
+      int n = in.read(buf, sizeof(buf));
+      if (n <= 0) break;
+      int w = out.write(buf, (size_t)n);
+      if (w != n) { status = COPY_WRITE_FAILED; break; }
+    }
+    out.flush();
+    out.close();
+    in.close();
+    return status;
+  }
+
+  // Read entire source file into a heap buffer. Returns size on
+  // success, -ve CopyStatus on failure.
+  static int readSourceWhole(const Target& src,
+                             uint8_t** outBuf, int maxSize)
+  {
+    *outBuf = nullptr;
+
+    if (src.kind == KIND_DSK)
+    {
+      dsk::DskImage* img = fio::dskImage(src.drive);
+      if (!img) return -(int)COPY_NOT_MOUNTED;
+      uint8_t* buf = (uint8_t*)malloc((size_t)maxSize);
+      if (!buf) return -(int)COPY_OUT_OF_MEMORY;
+      int n = img->readRawFile(src.tiName, buf, maxSize);
+      if (n < 0) { free(buf); return -(int)COPY_NOT_FOUND; }
+      *outBuf = buf;
+      return n;
+    }
+
+    fs::FS* srcFs = fsForFlatKind(src.kind);
+    if (!srcFs) return -(int)(src.kind == KIND_SDCARD ? COPY_SD_NOT_PRESENT : COPY_BAD_SRC);
+    char srcPath[64];
+    if (!resolveExistingPath(*srcFs, src.name, srcPath, sizeof(srcPath)))
+    {
+      return -(int)COPY_NOT_FOUND;
+    }
+    File in = srcFs->open(srcPath, "r");
+    if (!in) return -(int)COPY_READ_FAILED;
+    int size = (int)in.size();
+    if (size < 0) size = 0;
+    if (size > maxSize) { in.close(); return -(int)COPY_OUT_OF_MEMORY; }
+    uint8_t* buf = (uint8_t*)malloc((size_t)(size > 0 ? size : 1));
+    if (!buf) { in.close(); return -(int)COPY_OUT_OF_MEMORY; }
+    int got = 0;
+    while (got < size)
+    {
+      int r = in.read(buf + got, (size_t)(size - got));
+      if (r <= 0) break;
+      got += r;
+    }
+    in.close();
+    *outBuf = buf;
+    return got;
+  }
+
+  // Write the buffer to the destination.
+  static CopyStatus writeDestWhole(const Target& dst, const uint8_t* buf, int size)
+  {
+    if (dst.kind == KIND_DSK)
+    {
+      dsk::DskImage* img = fio::dskImage(dst.drive);
+      if (!img) return COPY_NOT_MOUNTED;
+      if (img->readOnly()) return COPY_DST_READONLY;
+      // 0x01 = PROGRAM file flag in V9T9 catalog. For arbitrary binary
+      // copies we don't know the actual TI file type; PROGRAM is the
+      // safe default and matches what cmdSave uses.
+      return img->writeRawFile(dst.tiName, buf, size, 0x01) ? COPY_OK : COPY_WRITE_FAILED;
+    }
+
+    fs::FS* dstFs = fsForFlatKind(dst.kind);
+    if (!dstFs) return dst.kind == KIND_SDCARD ? COPY_SD_NOT_PRESENT : COPY_BAD_DST;
+    char dstPath[64];
+    snprintf(dstPath, sizeof(dstPath), "/%s", dst.name);
+    File out = dstFs->open(dstPath, "w");
+    if (!out) return COPY_WRITE_FAILED;
+    int w = out.write(buf, (size_t)size);
+    out.flush();
+    out.close();
+    return (w == size) ? COPY_OK : COPY_WRITE_FAILED;
+  }
+
+  CopyStatus copyFile(const char* srcSpec, const char* dstSpec)
+  {
+    Target src, dst;
+    if (!parseTarget(srcSpec, src)) return COPY_BAD_SRC;
+    if (!parseTarget(dstSpec, dst)) return COPY_BAD_DST;
+
+    // Pure FS-to-FS: stream chunks (no big buffer needed).
+    if (src.kind != KIND_DSK && dst.kind != KIND_DSK)
+    {
+      return copyFsToFs(src, dst);
+    }
+
+    // Anything involving a DSK image: read whole source into a buffer,
+    // write whole buffer to dest. The V9T9 image library is whole-file
+    // at a time. Max V9T9 SSSD file = 360 * 256 = 90 KB; we cap at
+    // 64 KB which covers everything a TI BASIC user is realistically
+    // saving without blowing the heap on a Box-3 / OTG.
+    const int kMaxDskFile = 64 * 1024;
+    uint8_t* buf = nullptr;
+    int n = readSourceWhole(src, &buf, kMaxDskFile);
+    if (n < 0) return (CopyStatus)(-n);
+    CopyStatus s = writeDestWhole(dst, buf, n);
+    free(buf);
+    return s;
+  }
+
+  const char* copyStatusMessage(CopyStatus s)
+  {
+    switch (s)
+    {
+      case COPY_OK:             return "OK";
+      case COPY_BAD_SRC:        return "BAD SOURCE SPEC";
+      case COPY_BAD_DST:        return "BAD DESTINATION SPEC";
+      case COPY_SD_NOT_PRESENT: return "SD NOT PRESENT";
+      case COPY_NOT_MOUNTED:    return "DRIVE NOT MOUNTED";
+      case COPY_NOT_FOUND:      return "SOURCE FILE NOT FOUND";
+      case COPY_READ_FAILED:    return "READ FAILED";
+      case COPY_WRITE_FAILED:   return "WRITE FAILED";
+      case COPY_OUT_OF_MEMORY:  return "OUT OF MEMORY";
+      case COPY_DST_READONLY:   return "DESTINATION READ-ONLY";
+    }
+    return "UNKNOWN";
+  }
+}
 
 namespace progio
 {
