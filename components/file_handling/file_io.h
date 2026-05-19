@@ -121,6 +121,21 @@ namespace fio
   inline SDInitFn g_sdInit = nullptr;
   inline void setSDInitCallback(SDInitFn cb) { g_sdInit = cb; }
 
+  // Fires whenever the .DSK virtual-drive mount table changes — i.e.
+  // after a successful mountDskImage or any unmountDskImage. The host
+  // registers a function that persists the mount table (typically by
+  // writing /mounts.cfg via LittleFS) so reboots restore them. The
+  // library has no opinion on where the state lives.
+  //
+  // This lets every caller — BASIC's MOUNT/UNMOUNT commands, the web
+  // file manager, future automation — get persistence for free. The
+  // alternative (each caller remembering to invoke a saveMounts() of
+  // its own) is fragile; a web-initiated mount once silently lost
+  // itself across reboots because the web handler bypassed the save.
+  typedef void (*MountChangedFn)();
+  inline MountChangedFn g_mountChanged = nullptr;
+  inline void setMountChangedCallback(MountChangedFn cb) { g_mountChanged = cb; }
+
   // Lazy-mount entry point. Callers that want to use SD should run this
   // first instead of checking g_sdOk directly: a stale invalidation
   // (e.g. card was yanked and then reinserted) will silently re-mount
@@ -215,6 +230,8 @@ namespace fio
     m.fromFlash = fromFlash;
     snprintf(m.spec, sizeof(m.spec), "%s", spec);
     snprintf(m.fsPath, sizeof(m.fsPath), "%s", fsPath);
+    // Mount-table state changed — fire the host's persistence hook.
+    if (g_mountChanged) g_mountChanged();
     return true;
   }
 
@@ -222,10 +239,14 @@ namespace fio
   {
     if (drive < 1 || drive > MAX_DSK) return;
     Mount& m = g_mounts[drive];
+    bool wasMounted = m.mounted;
     if (m.mounted) m.img.close();
     m.mounted = false;
     m.spec[0] = '\0';
     m.fsPath[0] = '\0';
+    // Only fire the hook if state actually changed (avoid churn from
+    // an unmount-while-not-mounted call).
+    if (wasMounted && g_mountChanged) g_mountChanged();
   }
 
   inline dsk::DskImage* dskImage(int drive)
