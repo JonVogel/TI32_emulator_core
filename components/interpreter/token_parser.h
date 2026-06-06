@@ -2758,9 +2758,14 @@ private:
 
     if (strcasecmp(subName, "WIFI") == 0)
     {
-      // CALL WIFI                  — print current status line
-      // CALL WIFI(ssid$, pass$)    — store creds + connect
-      // CALL WIFI("forget")        — clear creds + disconnect
+      // CALL WIFI                          — print current status line
+      // CALL WIFI("forget")                — clear creds + disconnect
+      // CALL WIFI("on")  / CALL WIFI("off")— toggle radio
+      // CALL WIFI("name", name$)           — set friendly hostname
+      //                                       (persisted; surfaces via
+      //                                       /api/status + discovery)
+      // CALL WIFI(ssid$, pass$)            — store creds + connect
+      // CALL WIFI(ssid$, pass$, name$)     — store creds + set hostname
       // Non-TI extension. Real TI had no WiFi.
       auto putLine = [&](const char* s) {
         if (m_printString)
@@ -2812,13 +2817,40 @@ private:
         return resp;
       }
 
-      // Two-string form: ssid, pass.
+      // Two-or-three-string form.
+      //   ("name", n$)         — hostname-only verb
+      //   (ssid, pass)         — credentials only
+      //   (ssid, pass, name)   — credentials + hostname in one shot
       if (tokens[*pos] == TOK_COMMA) (*pos)++;
       char arg2[80] = {0};
       m_expr.evalString(tokens, pos, arg2, sizeof(arg2));
+
+      char arg3[80] = {0};
+      bool hasArg3 = false;
+      if (tokens[*pos] == TOK_COMMA)
+      {
+        (*pos)++;
+        m_expr.evalString(tokens, pos, arg3, sizeof(arg3));
+        hasArg3 = true;
+      }
       if (tokens[*pos] == TOK_RPAREN) (*pos)++;
-      tiWifiSet(arg1, arg2);
-      putLine("WIFI: credentials stored; connecting");
+
+      if (!hasArg3 && strcasecmp(arg1, "name") == 0)
+      {
+        tiWifiSetHostName(arg2);
+        putLine("WIFI: hostname stored");
+      }
+      else if (hasArg3)
+      {
+        tiWifiSet(arg1, arg2);
+        tiWifiSetHostName(arg3);
+        putLine("WIFI: credentials + hostname stored; connecting");
+      }
+      else
+      {
+        tiWifiSet(arg1, arg2);
+        putLine("WIFI: credentials stored; connecting");
+      }
       return resp;
     }
 

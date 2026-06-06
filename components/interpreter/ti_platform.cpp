@@ -69,3 +69,4 @@ __attribute__((weak)) void tiWifiStatus(char* out, int outSize)
 }
 __attribute__((weak)) void tiWifiOff() {}
 __attribute__((weak)) void tiWifiOn()  {}
+__attribute__((weak)) void tiWifiSetHostName(const char* /*name*/) {}

@@ -151,8 +151,17 @@ void tiWifiStatus(char* out, int outSize);
 //   tiWifiOff(): disconnect + WiFi.mode(WIFI_OFF). Stops the HTTP server
 //                and prevents reconnect-induced flash writes / display
 //                glitches while still leaving creds in NVS for later.
-//   tiWifiOn():  re-enable radio and reconnect using stored creds.
+//   tiWifiOn():  re-enable radio and reconnect using stored creds. Also
+//                restores the persisted friendly hostname (if any) so
+//                webfiles::setHostName reflects it before the HTTP
+//                server starts.
 void tiWifiOff();
 void tiWifiOn();
+// Set the device's friendly hostname (what /api/status and the UDP
+// discovery reply advertise). Persists across reboots. Empty name
+// resets to the auto-derived default ("TI-XXXX" from MAC). Called by
+// CALL WIFI("name", n$) and as part of the 3-arg
+// CALL WIFI(ssid$, pass$, name$) form.
+void tiWifiSetHostName(const char* name);
 
 #endif // TI_PLATFORM_H
