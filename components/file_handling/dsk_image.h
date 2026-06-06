@@ -600,6 +600,108 @@ namespace dsk
       return true;
     }
 
+    // Rename a file in place. Patches the FDR's name bytes (no data
+    // sectors move) then re-sorts the directory entry into its new
+    // alphabetic position. Cheap — one FDR read+write plus the dir
+    // shuffle, no data copying. If a file with newName already exists
+    // it's deleted first (clobber semantics, same as writeRawFile).
+    // No-op + success if oldName and newName normalize to the same
+    // padded form.
+    bool renameFile(const char* oldName, const char* newName)
+    {
+      if (m_ro) return false;
+
+      char paddedOld[11];
+      char paddedNew[11];
+      padName(oldName, paddedOld);
+      padName(newName, paddedNew);
+      if (memcmp(paddedOld, paddedNew, 10) == 0) return true;
+
+      // Locate the old file's directory slot + FDR sector.
+      uint8_t dir[SECTOR_SIZE];
+      if (!readSector(1, dir)) return false;
+
+      uint16_t fdrSec = 0;
+      int      oldSlot = -1;
+      uint8_t  fdrBuf[SECTOR_SIZE];
+      for (int i = 0; i < 128; i++)
+      {
+        uint16_t s = (uint16_t(dir[i * 2]) << 8) | dir[i * 2 + 1];
+        if (s == 0) break;
+        if (!readSector(s, fdrBuf)) continue;
+        if (memcmp(fdrBuf, paddedOld, 10) == 0)
+        {
+          fdrSec  = s;
+          oldSlot = i;
+          break;
+        }
+      }
+      if (oldSlot < 0) return false;   // source not found
+
+      // If a file with newName already exists, delete it first.
+      // deleteFile() re-reads the directory, so we'll re-read after.
+      for (int i = 0; i < 128; i++)
+      {
+        uint16_t s = (uint16_t(dir[i * 2]) << 8) | dir[i * 2 + 1];
+        if (s == 0) break;
+        if (s == fdrSec) continue;   // skip the file we're renaming
+        uint8_t other[SECTOR_SIZE];
+        if (!readSector(s, other)) continue;
+        if (memcmp(other, paddedNew, 10) == 0)
+        {
+          if (!deleteFile(newName)) return false;
+          if (!readSector(1, dir)) return false;
+          // Re-locate the old entry — deleteFile may have shifted slots
+          oldSlot = -1;
+          for (int j = 0; j < 128; j++)
+          {
+            uint16_t ss = (uint16_t(dir[j * 2]) << 8) | dir[j * 2 + 1];
+            if (ss == 0) break;
+            if (ss == fdrSec) { oldSlot = j; break; }
+          }
+          if (oldSlot < 0) return false;
+          break;
+        }
+      }
+
+      // Patch the FDR's name bytes.
+      memcpy(fdrBuf, paddedNew, 10);
+      if (!writeSector(fdrSec, fdrBuf)) return false;
+
+      // Remove the old slot from the directory (shift remaining entries
+      // down by one).
+      for (int i = oldSlot; i < 127; i++)
+      {
+        dir[i * 2]     = dir[(i + 1) * 2];
+        dir[i * 2 + 1] = dir[(i + 1) * 2 + 1];
+      }
+      dir[127 * 2] = 0; dir[127 * 2 + 1] = 0;
+
+      // Find the new alphabetic insertion point in the (now-shorter)
+      // directory. Reads each remaining entry's FDR to compare names.
+      int insertAt = 128;
+      for (int i = 0; i < 128; i++)
+      {
+        uint16_t s = (uint16_t(dir[i * 2]) << 8) | dir[i * 2 + 1];
+        if (s == 0) { insertAt = i; break; }
+        uint8_t other[SECTOR_SIZE];
+        if (!readSector(s, other)) continue;
+        if (memcmp(other, paddedNew, 10) > 0) { insertAt = i; break; }
+      }
+      if (insertAt >= 128) return false;
+
+      // Shift entries up to make room, then drop the FDR pointer in.
+      for (int i = 127; i > insertAt; i--)
+      {
+        dir[i * 2]     = dir[(i - 1) * 2];
+        dir[i * 2 + 1] = dir[(i - 1) * 2 + 1];
+      }
+      dir[insertAt * 2]     = (fdrSec >> 8) & 0xFF;
+      dir[insertAt * 2 + 1] = fdrSec & 0xFF;
+
+      return writeSector(1, dir);
+    }
+
     // Begin writing a new DIS/VAR file. If a file with this name exists
     // it's deleted first (OUTPUT semantics).
     bool openDisVarWriter(const char* name, DisVarWriter& w)
@@ -912,10 +1014,30 @@ namespace dsk
       return byteCount;
     }
 
-    // Write buf as a new file of the given type flags (e.g. 0x01 for
-    // PROGRAM). Overwrites any existing file of this name.
+    // Write buf as a new file. Default invocation (single typeFlags arg)
+    // matches the original PROGRAM-only behavior — sectorCount derived
+    // from size, recLen=0, numRecords=0. For record-structured uploads
+    // (DIS/FIX, DIS/VAR, INT/FIX, INT/VAR) callers pass the extra
+    // metadata explicitly (typically parsed out of a TIFILES header,
+    // see the caller in TI_Web_Files_ESP /api/dskupload).
+    //
+    // typeFlags uses the V9T9 convention (see file header comment at top):
+    //   0x01 = PROGRAM, 0x02 = INTERNAL, 0x40 = VARIABLE.
+    // When caller wants the FDR fields to come from explicit values
+    // instead of being computed:
+    //   - recLen:        logical record length (1..254); 0 for PROGRAM
+    //   - numRecords:    total records in the file (LE in FDR, TI quirk)
+    //   - recsPerSector: 0 means "compute as SECTOR_SIZE / recLen" for
+    //                    FIXED files; VARIABLE files store this as 0 too
+    //   - eofOffset:     byte offset in last sector; -1 means "compute
+    //                    from size % SECTOR_SIZE" (PROGRAM behavior)
+    // Overwrites any existing file of this name.
     bool writeRawFile(const char* name, const uint8_t* buf, int size,
-                      uint8_t typeFlags)
+                      uint8_t typeFlags,
+                      uint8_t recLen        = 0,
+                      uint16_t numRecords   = 0,
+                      uint8_t recsPerSector = 0,
+                      int eofOffset         = -1)
     {
       if (m_ro) return false;
       if (!deleteFile(name)) return false;
@@ -962,11 +1084,23 @@ namespace dsk
       padName(name, padded);
       memcpy(fdr, padded, 10);
       fdr[0x0C] = typeFlags;
+      // records-per-sector: caller-provided when set, else computed for
+      // FIXED files, else 0 (VARIABLE / PROGRAM)
+      uint8_t rps = recsPerSector;
+      if (rps == 0 && recLen > 0 && !(typeFlags & 0x40))
+      {
+        rps = (uint8_t)(SECTOR_SIZE / recLen);
+      }
+      fdr[0x0D] = rps;
       fdr[0x0E] = (sectorsNeeded >> 8) & 0xFF;
       fdr[0x0F] = sectorsNeeded & 0xFF;
-      fdr[0x10] = (uint8_t)(size % SECTOR_SIZE);
-      fdr[0x11] = 0;   // no record length for PROGRAM
-      fdr[0x12] = 0; fdr[0x13] = 0;
+      fdr[0x10] = (eofOffset < 0)
+                  ? (uint8_t)(size % SECTOR_SIZE)
+                  : (uint8_t)eofOffset;
+      fdr[0x11] = recLen;
+      // Record count is little-endian (TI quirk).
+      fdr[0x12] = (uint8_t)(numRecords & 0xFF);
+      fdr[0x13] = (uint8_t)((numRecords >> 8) & 0xFF);
 
       // Build cluster chain (consolidate contiguous runs)
       int off = 0x1C;
