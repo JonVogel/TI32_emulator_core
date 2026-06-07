@@ -322,6 +322,13 @@ public:
           return resp;
         }
 
+        case TOK_RUN:
+        {
+          pos++;
+          resp = execRun(tokens, &pos);
+          return resp;
+        }
+
         case TOK_GOSUB:
         {
           pos++;
@@ -340,7 +347,9 @@ public:
         {
           pos++;
           resp = execIf(tokens, &pos, length);
-          if (resp.result == TP_GOTO_LINE)
+          if (resp.result == TP_GOTO_LINE ||
+              resp.result == TP_RUN_LINE ||
+              resp.result == TP_RUN_SPEC)
           {
             return resp;
           }
@@ -478,7 +487,9 @@ public:
         {
           pos++;
           resp = execOn(tokens, &pos, lineNum);
-          if (resp.result == TP_GOTO_LINE)
+          if (resp.result == TP_GOTO_LINE ||
+              resp.result == TP_RUN_LINE ||
+              resp.result == TP_RUN_SPEC)
           {
             return resp;
           }
@@ -1820,6 +1831,60 @@ private:
       resp.result = TP_ERROR;
       snprintf(resp.errorMsg, sizeof(resp.errorMsg), "SYNTAX ERROR");
     }
+    return resp;
+  }
+
+  // RUN — three forms, all valid both as a top-level command and as a
+  // statement inside a running program (the latter is the load-bearing
+  // pattern that lets menu/launcher programs chain into other programs,
+  // as on real TI game disks):
+  //
+  //   RUN                        no arg — restart at first program line
+  //   RUN <line-number>          start at that specific line
+  //   RUN "device.program-name"  load that program from device, then run
+  //
+  // Per TI XB semantics, every RUN resets the variable space (numeric to
+  // 0, strings to "") — the EM does that when it handles TP_RUN_LINE /
+  // TP_RUN_SPEC. For the filespec form, the EM hands `runSpec` to the
+  // host's chain-loader callback (which performs OLD-style loading and
+  // re-enters run()), and the current program + data are wiped.
+  TPResponse execRun(const uint8_t* tokens, int* pos)
+  {
+    TPResponse resp;
+    resp.errorMsg[0] = '\0';
+
+    // No argument → restart from the first line.
+    if (tokens[*pos] == TOK_EOL ||
+        tokens[*pos] == TOK_COLON ||
+        tokens[*pos] == TOK_DCOLON)
+    {
+      resp.result = TP_RUN_LINE;
+      resp.lineNum = 0;   // 0 = start at first line (not "line 0")
+      return resp;
+    }
+
+    // Quoted string → filespec ("device.program-name").
+    if (tokens[*pos] == TOK_QUOTED_STR)
+    {
+      char spec[64] = {0};
+      m_expr.evalString(tokens, pos, spec, sizeof(spec));
+      strncpy(resp.runSpec, spec, sizeof(resp.runSpec) - 1);
+      resp.runSpec[sizeof(resp.runSpec) - 1] = '\0';
+      resp.result = TP_RUN_SPEC;
+      return resp;
+    }
+
+    // Line number (encoded TOK_LINENUM or stringified number).
+    if (tokens[*pos] == TOK_LINENUM ||
+        tokens[*pos] == TOK_UNQUOTED_STR)
+    {
+      resp.result = TP_RUN_LINE;
+      resp.lineNum = readLineNum(tokens, pos);
+      return resp;
+    }
+
+    resp.result = TP_ERROR;
+    snprintf(resp.errorMsg, sizeof(resp.errorMsg), "SYNTAX ERROR");
     return resp;
   }
 

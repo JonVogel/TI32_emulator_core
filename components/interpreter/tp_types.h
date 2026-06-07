@@ -39,7 +39,14 @@ enum TPResult : uint8_t
   TP_ERROR,
   TP_WARNING,       // Recoverable diagnostic — EM honors ON WARNING mode
   TP_CALL_SUB,      // Push return addr, jump to lineNum (subprogram entry)
-  TP_SUB_RETURN     // Pop return addr and jump (SUBEND / SUBEXIT)
+  TP_SUB_RETURN,    // Pop return addr and jump (SUBEND / SUBEXIT)
+  TP_RUN_LINE,      // RUN [<line>] — reset vars, restart from lineNum
+                    // (lineNum=0 means "first line of program"). Used by
+                    // bare RUN at the prompt AND by mid-program RUN <N>.
+  TP_RUN_SPEC,      // RUN "device.name" — host loads the named program,
+                    // resets state, and starts running it from line 1.
+                    // Filespec lives in TPResponse.runSpec. Current
+                    // program + data are wiped (per TI XB semantics).
 };
 
 // Modes for ON BREAK / ON ERROR / ON WARNING handler configuration.
@@ -62,13 +69,14 @@ struct TPSubAlias
 struct TPResponse
 {
   TPResult result;
-  uint16_t lineNum;         // target line NUMBER for GOTO/GOSUB/…
+  uint16_t lineNum;         // target line NUMBER for GOTO/GOSUB/RUN <N>/…
   uint16_t lineIdx = 0;     // target line INDEX for TP_CALL_SUB
   char errorMsg[40];
   char prompt[80];
   bool cursorPrePositioned = false;   // ACCEPT AT: EM should NOT move cursor
   TPSubAlias aliases[6];              // only used with TP_CALL_SUB
   uint8_t aliasCount = 0;
+  char runSpec[64] = {0};             // only used with TP_RUN_SPEC (chain RUN)
 };
 
 // ---------------------------------------------------------------------------

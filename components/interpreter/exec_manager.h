@@ -323,6 +323,38 @@ public:
     if (s_instance) s_instance->resetData(lineNum);
   }
 
+  // Chain-loader hook: when a RUN "device.program-name" statement (or
+  // command) fires, the EM hands the filespec to this callback so the
+  // host can perform OLD-style loading and re-enter run() with the new
+  // program. Without it installed, RUN <spec> prints a diagnostic.
+  typedef void (*ChainLoaderFn)(const char* spec);
+  void setChainLoader(ChainLoaderFn fn) { m_chainLoader = fn; }
+
+  // RUN <line-number> at the prompt. Equivalent to a bare RUN that
+  // jumps to the requested line after the usual var/sub/DATA reset.
+  // Returns silently with "* LINE NOT FOUND" if the line doesn't exist.
+  void runFromLine(uint16_t lineNum)
+  {
+    if (m_programSize == 0)
+    {
+      if (m_printError) m_printError("* NO PROGRAM PRESENT");
+      return;
+    }
+    int idx = findLineIndex(lineNum);
+    if (idx >= m_programSize || m_program[idx]->lineNum != lineNum)
+    {
+      if (m_printError)
+      {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "* LINE NOT FOUND: %u", (unsigned)lineNum);
+        m_printError(buf);
+      }
+      return;
+    }
+    m_startLineIdxOverride = idx;
+    run();
+  }
+
   void run()
   {
     if (m_programSize == 0)
@@ -349,7 +381,18 @@ public:
       m_tp.reset();
       scanForSubs();
       m_subDepth = 0;
-      lineIdx = 0;
+      // RUN <line-number> at the prompt: runFromLine() seeded the start
+      // index so we don't begin from line 0. Single-shot — clear after
+      // consuming so subsequent bare RUNs start at the top again.
+      if (m_startLineIdxOverride >= 0)
+      {
+        lineIdx = m_startLineIdxOverride;
+        m_startLineIdxOverride = -1;
+      }
+      else
+      {
+        lineIdx = 0;
+      }
     }
     m_canContinue = false;
     m_running = true;
@@ -518,6 +561,16 @@ private:
   bool m_trace;
   int  m_breakpoints[MAX_BREAKPOINTS];
   int  m_breakpointCount;
+
+  // RUN <line> entry: runFromLine() sets this so the next run() starts
+  // here instead of line 0. Single-shot — cleared on consume.
+  int m_startLineIdxOverride = -1;
+
+  // RUN "spec" chain loader — host-provided callback that loads the
+  // named program (FLASH./SDCARD./DSK<n>. prefix), wipes current state,
+  // and re-enters run(). NULL when not wired (RUN <spec> then errors
+  // visibly instead of silently no-op'ing).
+  ChainLoaderFn m_chainLoader = NULL;
 
 public:
   // Per-line throttle (microseconds). 0 = unthrottled (default), our
@@ -754,6 +807,61 @@ private:
         }
         if (m_printError) m_printError("* RETURN WITHOUT GOSUB");
         m_running = false;
+        return -1;
+      }
+
+      case TP_RUN_LINE:
+      {
+        // RUN [<line>] — wipe runtime state (vars, DATA, sub stack,
+        // sub table rescan), then restart from the requested line.
+        // lineNum=0 means "first program line"; any other value must
+        // resolve to an existing line.
+        resetData(0);
+        m_tp.reset();
+        scanForSubs();
+        m_subDepth = 0;
+        m_canContinue = false;
+        if (resp.lineNum == 0)
+        {
+          return 0;
+        }
+        int idx = findLineIndex(resp.lineNum);
+        if (idx < m_programSize && m_program[idx]->lineNum == resp.lineNum)
+        {
+          return idx;
+        }
+        if (m_printError)
+        {
+          char buf[48];
+          snprintf(buf, sizeof(buf), "* LINE NOT FOUND IN %d",
+                   m_program[currentIdx]->lineNum);
+          m_printError(buf);
+        }
+        m_running = false;
+        return -1;
+      }
+
+      case TP_RUN_SPEC:
+      {
+        // RUN "device.program-name" — current run() unwinds; the host's
+        // chain-loader replaces the program and re-enters run(). Without
+        // a chain loader installed this is a no-op + diagnostic so the
+        // failure mode is visible instead of silent.
+        m_running = false;
+        m_canContinue = false;
+        if (m_chainLoader)
+        {
+          // Copy the spec out of resp before we return — the loader may
+          // re-enter run() and reuse the TPResponse storage.
+          char spec[64];
+          strncpy(spec, resp.runSpec, sizeof(spec) - 1);
+          spec[sizeof(spec) - 1] = '\0';
+          m_chainLoader(spec);
+        }
+        else if (m_printError)
+        {
+          m_printError("* RUN <spec> NOT WIRED (no chain loader)");
+        }
         return -1;
       }
 
