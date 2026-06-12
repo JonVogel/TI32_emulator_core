@@ -23,6 +23,12 @@
 
 #include <stdint.h>
 
+// TI32 release version. Single source of truth across the whole stack
+// (interpreter + both hosts). Displayed on the splash screen so any
+// running board self-identifies which build it has. Bump on every
+// shipped change. Keep "v" prefix + dot-separated semver.
+#define TI32_VERSION "v0.1.0"
+
 // ---------------------------------------------------------------------------
 // Cooperative yield — every long-running loop in the interpreter, file
 // I/O, and graphics layers calls this so the host OS can schedule its
