@@ -220,4 +220,161 @@ void editReplaceLine(LineEdit& s, const char* src)
   editSyncCursor(s);
 }
 
+// ---------------------------------------------------------------------------
+// Paste ring + editor input pump.
+// ---------------------------------------------------------------------------
+
+// Decoupled 16 KB paste ring so USB-CDC can drop a whole program's
+// worth of bytes faster than the editor consumes them. See the doc
+// comment on pasteDrainSerial in ti_host.h.
+#define PASTE_BUF_SIZE 16384
+static uint8_t s_pasteBuf[PASTE_BUF_SIZE];
+static int     s_pasteHead = 0;
+static int     s_pasteTail = 0;
+
+void pasteDrainSerial()
+{
+  while (Serial.available())
+  {
+    int next = (s_pasteHead + 1) % PASTE_BUF_SIZE;
+    if (next == s_pasteTail) break;   // full — back-pressure onto Serial
+    s_pasteBuf[s_pasteHead] = (uint8_t)Serial.read();
+    s_pasteHead = next;
+  }
+}
+
+bool pasteAvailable() { return s_pasteHead != s_pasteTail; }
+
+int pasteRead()
+{
+  if (s_pasteHead == s_pasteTail) return -1;
+  uint8_t c = s_pasteBuf[s_pasteTail];
+  s_pasteTail = (s_pasteTail + 1) % PASTE_BUF_SIZE;
+  return c;
+}
+
+// Reads the next editor byte from the paste buffer (Serial side) or
+// BLE keyboard (via display.hostReadBleKey), normalizing Serial line
+// endings (\r\n → one Enter; lone \n → \r), dropping tabs (since
+// \t = RIGHT-arrow in the TI encoding), re-tagging Ctrl+H (0x08) as
+// BACKSPACE, and translating ANSI CSI cursor sequences (ESC [ A/B/C/D
+// et al) into their TI CHR$ codes. Returns -1 if nothing is available.
+int editorReadChar()
+{
+  static bool skipNextLf = false;
+
+  // Top up from Serial before each read so we don't block on the
+  // editor's pace while USB has more bytes waiting.
+  pasteDrainSerial();
+
+  while (pasteAvailable())
+  {
+    uint8_t c = (uint8_t)pasteRead();
+    if (c == '\r') { skipNextLf = true; return '\r'; }
+    if (c == '\n')
+    {
+      if (skipNextLf) { skipNextLf = false; continue; }
+      return '\r';
+    }
+    skipNextLf = false;
+    if (c == '\t') continue;
+    // Most PC terminals send Ctrl+H (0x08) for the BACKSPACE key; the
+    // editor uses 0x08 internally for LEFT (BLE keyboards' arrow keys
+    // are mapped to TI CHR$ codes). Re-tag serial 0x08 as 0x7F so it
+    // hits the BACKSPACE handler. BLE input bypasses this path.
+    if (c == 0x08) return 0x7F;
+    // ANSI CSI cursor sequence — PC terminals send arrows as
+    // ESC [ A/B/C/D (UP/DOWN/RIGHT/LEFT), DEL as ESC [ 3 ~, HOME as
+    // ESC [ H. Without this the [, A, etc. get inserted as literal
+    // chars. Terminals send the whole sequence back-to-back so the
+    // rest is already in the paste buffer when we see ESC; if it
+    // isn't, treat as a lone ESC (used by CAT/DIR cancel).
+    if (c == 0x1B)
+    {
+      if (pasteAvailable() && s_pasteBuf[s_pasteTail] == '[')
+      {
+        pasteRead();
+        if (!pasteAvailable()) return 0x1B;
+        uint8_t code = (uint8_t)pasteRead();
+        switch (code)
+        {
+          case 'A': return 0x0B;   // UP
+          case 'B': return 0x0A;   // DOWN
+          case 'C': return 0x09;   // RIGHT
+          case 'D': return 0x08;   // LEFT
+          case 'H': return 0x05;   // HOME = BEGIN (FCTN+5)
+          case '3':
+            if (pasteAvailable() && s_pasteBuf[s_pasteTail] == '~')
+            {
+              pasteRead();
+              return 0x07;
+            }
+            continue;
+          default: continue;
+        }
+      }
+      return 0x1B;
+    }
+    return c;
+  }
+
+  const auto& d = getHostCommonDisplay();
+  if (d.hostReadBleKey) return d.hostReadBleKey();
+  return -1;
+}
+
+// Test whether the current buffer contains nothing but decimal digits.
+bool editBufferIsAllDigits(const LineEdit& s)
+{
+  if (s.len == 0) return false;
+  for (int i = 0; i < s.len; i++)
+  {
+    if (!isdigit((unsigned char)s.buf[i])) return false;
+  }
+  return true;
+}
+
+// True if the buffer is exactly "<digits> " (at least one trailing
+// space) with nothing else — the NUMBER-mode auto-fill form. Lets the
+// editor detect "Enter without adding anything" so it can exit NUMBER
+// mode cleanly instead of deleting the line.
+bool editorBufferIsAutoFillOnly(const LineEdit& s)
+{
+  if (s.len == 0) return false;
+  int p = 0;
+  if (!isdigit((unsigned char)s.buf[p])) return false;
+  while (p < s.len && isdigit((unsigned char)s.buf[p])) p++;
+  if (p >= s.len || s.buf[p] != ' ') return false;
+  while (p < s.len && s.buf[p] == ' ') p++;
+  return p >= s.len;
+}
+
+// ---------------------------------------------------------------------------
+// Interpreter integration.
+// ---------------------------------------------------------------------------
+static TiInterpreterHooks s_interp = {};
+
+void setInterpreterHooks(const TiInterpreterHooks& hooks) { s_interp = hooks; }
+
+int findProgramLineIndex(int lineNum)
+{
+  if (!s_interp.findProgramLineIndex) return -1;
+  return s_interp.findProgramLineIndex(lineNum);
+}
+bool commitEditedLine(const LineEdit& s)
+{
+  if (!s_interp.commitEditedLine) return true;
+  return s_interp.commitEditedLine(s);
+}
+void loadProgramLineToEdit(LineEdit& s, int idx)
+{
+  if (!s_interp.loadProgramLineToEdit) return;
+  s_interp.loadProgramLineToEdit(s, idx);
+}
+int programSize()
+{
+  if (!s_interp.programSize) return 0;
+  return s_interp.programSize();
+}
+
 } // namespace tihost

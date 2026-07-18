@@ -118,6 +118,12 @@ struct TiDisplay
   void (*hostHonk)();            // optional — audible error beep
   void (*hostPostScroll)();      // optional — redraw sprite overlay
   void (*hostFillBackground)(uint16_t bg);  // optional — full background paint
+  // BLE HID keyboard input. host_common's editorReadChar polls this
+  // after draining the paste buffer — return -1 if no key waiting,
+  // else the next byte from the BLE keyboard's ring buffer (already
+  // mapped to TI CHR$ codes by ble_keyboard.h). Null when the host
+  // has no BLE keyboard (guition first pass).
+  int  (*hostReadBleKey)();
 };
 
 // ---------------------------------------------------------------------------
@@ -252,6 +258,54 @@ void editBackspace(LineEdit& s);
 void editTypeChar(LineEdit& s, uint8_t c);
 void editEraseLine(LineEdit& s);
 void editReplaceLine(LineEdit& s, const char* src);
+
+// ---------------------------------------------------------------------------
+// Editor input plumbing (paste buffer + BLE keyboard) and small predicates.
+//
+// pasteDrainSerial pulls every byte out of Arduino Serial into a 16 KB
+// local ring buffer as often as we get called, so a USB-CDC paste that
+// arrives faster than the editor can consume doesn't overflow the
+// Arduino-CDC ring (~4 KB) and drop lines. editorReadChar returns the
+// next byte the editor should process — draining paste first (with
+// ANSI CSI translation and CR/LF/tab normalization), then falling back
+// to display.hostReadBleKey if wired.
+// ---------------------------------------------------------------------------
+void pasteDrainSerial();
+bool pasteAvailable();
+int  pasteRead();
+
+int  editorReadChar();
+
+bool editBufferIsAllDigits(const LineEdit& s);
+bool editorBufferIsAutoFillOnly(const LineEdit& s);
+
+// ---------------------------------------------------------------------------
+// Interpreter integration.
+//
+// The line editor's line-recall path and command dispatch both need to
+// talk to the interpreter's ExecManager (findProgramLineIndex,
+// commitEditedLine, loadProgramLineToEdit, programSize). The interpreter
+// instance itself still lives in each host's main.cpp (moving `em`
+// would ripple into file I/O + tokenizer registration + a bunch else),
+// so we register callbacks — host implements each, host_common calls
+// through the registered function pointers.
+// ---------------------------------------------------------------------------
+struct TiInterpreterHooks
+{
+  int  (*findProgramLineIndex)(int lineNum);
+  bool (*commitEditedLine)(const LineEdit& s);
+  void (*loadProgramLineToEdit)(LineEdit& s, int idx);
+  int  (*programSize)();
+};
+
+void setInterpreterHooks(const TiInterpreterHooks& hooks);
+
+// Thin wrappers around the registered callbacks — used by the editor's
+// UP/DOWN handlers. Return -1 / no-op if hooks aren't wired.
+int  findProgramLineIndex(int lineNum);
+bool commitEditedLine(const LineEdit& s);
+void loadProgramLineToEdit(LineEdit& s, int idx);
+int  programSize();
 
 // ---------------------------------------------------------------------------
 // Called once from the host's setup() after Serial + display are up.
