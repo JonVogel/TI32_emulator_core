@@ -93,6 +93,10 @@ struct TiHostConfig
 //   with direct-to-panel drivers (LovyanGFX SPI); real work on hosts
 //   with a double-buffered RGB parallel display (Arduino_GFX RGBPanelDB).
 // ---------------------------------------------------------------------------
+// Optional hooks below hostFlush can be left null; host_common no-ops
+// them. hostPaintBorder is the sunton-only TI-style screen-color frame
+// around the char grid. hostHonk is the box-only speaker beep on
+// printError (sunton has no audio codec).
 struct TiDisplay
 {
   bool (*hostBegin)(uint16_t bg_color);
@@ -101,6 +105,8 @@ struct TiDisplay
   void (*hostPutPixel)(int px, int py, uint16_t color);
   void (*hostFillScreen)(uint16_t color);
   void (*hostFlush)();
+  void (*hostPaintBorder)();     // optional — repaint TI-style border ring
+  void (*hostHonk)();            // optional — audible error beep
 };
 
 // ---------------------------------------------------------------------------
@@ -170,6 +176,37 @@ extern int      cursorCol;
 extern int      cursorRow;
 extern uint16_t fgColor;
 extern uint16_t bgColor;
+
+// ---------------------------------------------------------------------------
+// Shared render surface. All of these read screenBuf + charPatterns +
+// palette state and dispatch to the panel via the TiDisplay hooks
+// registered by hostCommonInit(). Host code calls these instead of
+// touching the panel directly.
+//
+// drawCell(): render one char at (col, row) via nearest-neighbor scale
+//   from the 8x8 ROM font to cfg.char_w x cfg.char_h, then hostPushCell
+//   at (cfg.display_x_offset + col*cfg.char_w, cfg.display_y_offset +
+//   row*cfg.char_h). Handles 1x (box), 2x (sunton), non-integer (10x10
+//   guition planned) uniformly.
+// refreshScreen(): diff screenBuf vs prevScreenBuf, drawCell each
+//   changed cell, update prevScreenBuf.
+// redrawScreen(): unconditional redraw of the whole 32x24 grid.
+// scrollUp(): shift the char grid up one row, fill bottom with spaces,
+//   refresh, then hostPaintBorder() if set + hostFillRect the bottom
+//   pixel strip below the grid to bg.
+// tiClearScreen(): memset screenBuf to spaces, hostFillScreen(bgColor),
+//   home cursor at bottom-left row.
+// tiPrintChar/String/printLine: TI-style text output — writes to
+//   screenBuf, drawCells, mirrors to Serial, wraps + scrolls at EOL.
+// printError(): blank line, msg, blank line, hostHonk() if wired.
+// ---------------------------------------------------------------------------
+void drawCell(int col, int row);
+void refreshScreen();
+void redrawScreen();
+// scrollUp/tiClearScreen/tiPrintChar family still live in each host's
+// main.cpp for now — they need hooks for host-specific post-scroll
+// sprite redraw, TI-style border repaint, and audible error honk. Next
+// move adds those hooks and pulls the functions into host_common.
 
 // ---------------------------------------------------------------------------
 // Called once from the host's setup() after Serial + display are up.
