@@ -126,6 +126,20 @@ uint16_t resolveColor(uint8_t idx);
 void gfxResetColors();
 
 // ---------------------------------------------------------------------------
+// Splash-screen assets. The 3x3 "TEXAS INSTRUMENTS" logo character
+// grid (one 8x8 pattern per cell, row-major) and the 8x8 copyright ©
+// glyph both come out of the TI-99/4A ROM boot screen. Each host
+// still owns drawTexasLogo() itself (it calls the per-host drawCell)
+// but the bitmap data lives here so all three hosts share one copy.
+//
+// Layout of tiLogoChars: 129=(1,1) 130=(1,2) 131=(1,3)
+//                        132=(2,1) 133=(2,2) 134=(2,3)
+//                        135=(3,1) 136=(3,2) 137=(3,3)
+// ---------------------------------------------------------------------------
+extern const uint8_t tiLogoChars[9][8];
+extern const uint8_t copyrightBitmap[8];
+
+// ---------------------------------------------------------------------------
 // Called once from the host's setup() after Serial + display are up.
 // Wires the host's config + display hooks into host_common, then
 // initializes screenBuf, palette, font tables, and interpreter callbacks.
