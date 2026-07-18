@@ -2,6 +2,7 @@
 # that REQUIRES TI_Font. Arduino-style projects can keep ignoring this
 # file and pick up the library via library.properties as before.
 idf_component_register(
+    SRCS "ti_font.cpp"
     INCLUDE_DIRS "."
     REQUIRES arduino
 )

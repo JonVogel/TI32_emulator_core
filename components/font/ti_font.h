@@ -408,13 +408,17 @@ enum TiFontMode : uint8_t
   TI_FONT_TI = 1,
 };
 
-static TiFontMode g_tiFontMode = TI_FONT_PC;
+// Active font-set + mutable rendering table live in ti_font.cpp so
+// they have proper external linkage. Previously declared `static`,
+// which gave every translation unit that included this header its
+// own private copy — fine when only main.cpp included it, breaks
+// silently once shared code (e.g. host_common's drawCell) also
+// needs to read charPatterns.
+extern TiFontMode g_tiFontMode;
+extern uint8_t    charPatterns[TI_CHAR_COUNT][TI_CHAR_BYTES];
 
 static inline TiFontMode getTiFontMode() { return g_tiFontMode; }
 static inline void setTiFontMode(TiFontMode m) { g_tiFontMode = m; }
-
-// Runtime copy of character patterns (so CALL CHAR can modify them)
-static uint8_t charPatterns[TI_CHAR_COUNT][TI_CHAR_BYTES];
 
 // Initialize runtime patterns from ROM defaults. Reads the active font mode
 // — host should call setTiFontMode() with the NVS-loaded value before this.
