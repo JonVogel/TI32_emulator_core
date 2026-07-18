@@ -24,6 +24,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// LineEdit / EditResult / EditMode — needed by the editor primitives
+// this component now owns. Pulls in tiny types with no runtime deps.
+#include "line_editor.h"
+
 namespace tihost
 {
 
@@ -216,6 +220,38 @@ void tiPrintChar(char c);
 void tiPrintString(const char* s);
 void printLine(const char* s);
 void printError(const char* s);
+
+// ---------------------------------------------------------------------------
+// Line editor primitives.
+//
+// LineEdit / EditResult / EditMode are declared in the interpreter's
+// line_editor.h — we don't re-declare here, we just include it below
+// (the interpreter is a REQUIRES dep of host_common). Callers include
+// ti_host.h and get both.
+//
+// Split ownership:
+//   - This file owns the pure buffer/cursor primitives (drawCursor,
+//     editPosToRC, editSyncCursor, redrawLineTail, editTypeChar,
+//     editBackspace, editDeleteAtCursor, editEraseLine, editReplaceLine)
+//     and their small state (editInsertMode, editMode,
+//     lastRecalledLineNum).
+//   - processEditChar / getInputLine / checkInput are still per-host —
+//     they touch the interpreter's `em` object and each host's own
+//     BLE keyboard driver. Those get hooks + moves in later commits.
+// ---------------------------------------------------------------------------
+extern bool editInsertMode;
+extern EditMode editMode;
+extern int  lastRecalledLineNum;
+
+void drawCursor(bool visible);
+void editPosToRC(const LineEdit& s, int pos, int& outRow, int& outCol);
+void editSyncCursor(const LineEdit& s);
+void redrawLineTail(const LineEdit& s, int fromPos, int eraseExtra);
+void editDeleteAtCursor(LineEdit& s);
+void editBackspace(LineEdit& s);
+void editTypeChar(LineEdit& s, uint8_t c);
+void editEraseLine(LineEdit& s);
+void editReplaceLine(LineEdit& s, const char* src);
 
 // ---------------------------------------------------------------------------
 // Called once from the host's setup() after Serial + display are up.
