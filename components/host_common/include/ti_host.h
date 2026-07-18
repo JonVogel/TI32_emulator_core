@@ -96,7 +96,12 @@ struct TiHostConfig
 // Optional hooks below hostFlush can be left null; host_common no-ops
 // them. hostPaintBorder is the sunton-only TI-style screen-color frame
 // around the char grid. hostHonk is the box-only speaker beep on
-// printError (sunton has no audio codec).
+// printError (sunton has no audio codec). hostPostScroll runs after
+// scrollUp shifts the grid — hosts with software sprites use it to
+// redraw the sprite layer on top of the freshly-scrolled cells.
+// hostFillBackground handles the different "clear whole background"
+// semantics between hosts (box paints the entire panel to bg; sunton
+// paints outside-grid to black then draws a TI-cyan border ring).
 struct TiDisplay
 {
   bool (*hostBegin)(uint16_t bg_color);
@@ -107,6 +112,8 @@ struct TiDisplay
   void (*hostFlush)();
   void (*hostPaintBorder)();     // optional — repaint TI-style border ring
   void (*hostHonk)();            // optional — audible error beep
+  void (*hostPostScroll)();      // optional — redraw sprite overlay
+  void (*hostFillBackground)(uint16_t bg);  // optional — full background paint
 };
 
 // ---------------------------------------------------------------------------
@@ -203,10 +210,12 @@ extern uint16_t bgColor;
 void drawCell(int col, int row);
 void refreshScreen();
 void redrawScreen();
-// scrollUp/tiClearScreen/tiPrintChar family still live in each host's
-// main.cpp for now — they need hooks for host-specific post-scroll
-// sprite redraw, TI-style border repaint, and audible error honk. Next
-// move adds those hooks and pulls the functions into host_common.
+void scrollUp();
+void tiClearScreen();
+void tiPrintChar(char c);
+void tiPrintString(const char* s);
+void printLine(const char* s);
+void printError(const char* s);
 
 // ---------------------------------------------------------------------------
 // Called once from the host's setup() after Serial + display are up.

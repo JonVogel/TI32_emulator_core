@@ -51,6 +51,13 @@ bool hostCommonInit(const TiHostConfig& cfg, const TiDisplay& display)
 // the eventual move doesn't require a signature change in hosts.
 void hostCommonTick() {}
 
+// Accessors for the file-static config + display, used by the sibling
+// TUs in host_common (ti_host_text.cpp needs them). Not exposed in
+// ti_host.h — hosts see the config/display via the copies they
+// registered via hostCommonInit(), no need for global access.
+TiHostConfig& getHostCommonConfig() { return s_cfg; }
+TiDisplay&    getHostCommonDisplay() { return s_display; }
+
 void drawCell(int col, int row)
 {
   uint8_t ch = (uint8_t)screenBuf[row][col];
