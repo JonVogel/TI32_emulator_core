@@ -140,6 +140,38 @@ extern const uint8_t tiLogoChars[9][8];
 extern const uint8_t copyrightBitmap[8];
 
 // ---------------------------------------------------------------------------
+// TI-99/4A character grid + cursor state.
+//
+// Every host draws to a fixed 32x24 character grid, so the storage
+// arrays are compile-time sized (constexpr constants below). Runtime
+// cfg.cols/cfg.rows are used by draw loops but the buffers themselves
+// are sized to the TI maximum — future 40-column XB modes would bump
+// TI_MAX_COLS and everything else follows.
+//
+// screenBuf holds the current character at each grid cell.
+// prevScreenBuf holds what was last painted to the panel — refreshScreen
+// diffs the two and redraws only the changed cells.
+//
+// cursorRow/cursorCol are in TI grid coordinates (0..ROWS-1, 0..COLS-1),
+// NOT pixel coordinates. Boot screens + line editor mutate these; the
+// per-host drawCursor turns them into panel-space pixels.
+//
+// fgColor/bgColor are the current text foreground/background as RGB565
+// values, kept as a cache so the host's own tft.setTextColor and
+// fillRect calls (for scrolling, border, etc) don't need to look
+// through resolveColor + charFgIdx + palette on the hot path.
+// ---------------------------------------------------------------------------
+constexpr int TI_MAX_COLS = 32;
+constexpr int TI_MAX_ROWS = 24;
+
+extern char     screenBuf[TI_MAX_ROWS][TI_MAX_COLS];
+extern char     prevScreenBuf[TI_MAX_ROWS][TI_MAX_COLS];
+extern int      cursorCol;
+extern int      cursorRow;
+extern uint16_t fgColor;
+extern uint16_t bgColor;
+
+// ---------------------------------------------------------------------------
 // Called once from the host's setup() after Serial + display are up.
 // Wires the host's config + display hooks into host_common, then
 // initializes screenBuf, palette, font tables, and interpreter callbacks.

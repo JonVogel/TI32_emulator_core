@@ -11,6 +11,7 @@ idf_component_register(
     SRCS
         "src/ti_host_color.cpp"
         "src/ti_host_logo.cpp"
+        "src/ti_host_screen.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES
