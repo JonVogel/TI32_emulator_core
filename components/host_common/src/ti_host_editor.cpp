@@ -377,4 +377,171 @@ int programSize()
   return s_interp.programSize();
 }
 
+// ---------------------------------------------------------------------------
+// Editor session state + processEditChar.
+// ---------------------------------------------------------------------------
+char lastCommandLine[MAX_INPUT_LEN + 1] = {0};
+bool numModeActive = false;
+int  numModeStart  = 0;
+int  numModeIncr   = 0;
+int  numModeNext   = 0;
+
+EditResult processEditChar(uint8_t c, LineEdit& s)
+{
+  // ----- handled identically in both edit modes -----
+
+  // Enter: commit line. Only match '\r' — '\n' (10) is DOWN on TI.
+  // Serial's '\n' is normalized to '\r' at the read site.
+  if (c == '\r')
+  {
+    // NUMBER mode: if the user pressed Enter without adding anything
+    // past the auto-fill, exit NUMBER mode and throw away the buffer
+    // so we don't accidentally delete the line with that number.
+    if (numModeActive && s.historyEnabled && editorBufferIsAutoFillOnly(s))
+    {
+      numModeActive = false;
+      s.len = 0;
+      s.pos = 0;
+      s.buf[0] = '\0';
+    }
+    s.buf[s.len] = '\0';
+    if (s.historyEnabled)
+    {
+      strncpy(lastCommandLine, s.buf, sizeof(lastCommandLine) - 1);
+      lastCommandLine[sizeof(lastCommandLine) - 1] = '\0';
+    }
+    // Position the cursor at end of the visible line BEFORE the '\n'
+    // scroll — with soft-wrap the last cell may be on a row below
+    // s.startRow.
+    {
+      int erow, ecol;
+      editPosToRC(s, s.len, erow, ecol);
+      const auto& cfg = getHostCommonConfig();
+      if (erow < 0)          erow = 0;
+      if (erow >= cfg.rows)  erow = cfg.rows - 1;
+      cursorRow = erow;
+      cursorCol = ecol;
+    }
+    ::tiPrintChar('\n');
+    editMode = EM_ENTRY;
+    lastRecalledLineNum = -1;
+    return EDIT_SUBMITTED;
+  }
+
+  // CLEAR — break
+  if (c == 12) return EDIT_BROKEN;
+
+  // ERASE (FCTN+3) — wipe line + drop to ENTRY
+  if (c == 2)  { editEraseLine(s); return EDIT_CONTINUE; }
+
+  // INS (FCTN+2) — toggle insert mode (global flag, both edit modes)
+  if (c == 4)  { editInsertMode = !editInsertMode; return EDIT_CONTINUE; }
+
+  // REDO (FCTN+8) — reload last-entered line, flip to EDIT
+  if (c == 14)
+  {
+    if (s.historyEnabled && lastCommandLine[0] != '\0')
+    {
+      editReplaceLine(s, lastCommandLine);
+      editMode = EM_EDIT;
+    }
+    return EDIT_CONTINUE;
+  }
+
+  // BKSP (127) — delete previous char.
+  if (c == 127) { editBackspace(s); return EDIT_CONTINUE; }
+
+  // Printable — typing always feeds the buffer.
+  if (c >= 32 && c < 127) { editTypeChar(s, c); return EDIT_CONTINUE; }
+
+  // ----- Cursor movement & DEL work in every edit context -----
+
+  if (c == 8)  { if (s.pos > 0) { s.pos--; editSyncCursor(s); } return EDIT_CONTINUE; }  // LEFT
+  if (c == 9)  { if (s.pos < s.len) { s.pos++; editSyncCursor(s); } return EDIT_CONTINUE; }  // RIGHT
+  if (c == 7)  { editDeleteAtCursor(s); return EDIT_CONTINUE; }  // DEL
+
+  // ----- UP/DOWN are mode-aware -----
+  //
+  //   INPUT (historyEnabled=false): no-op
+  //   ENTRY (editor prompt, not yet recalled): if the buffer is all
+  //     digits, jump to EDIT mode on that program line
+  //   EDIT  (a line is currently under edit): commit the current
+  //     buffer, then move to the previous/next program line; past
+  //     the boundary exits EDIT mode.
+  if (c == 11)   // UP (FCTN+E)
+  {
+    if (!s.historyEnabled) return EDIT_CONTINUE;
+    if (editMode == EM_ENTRY)
+    {
+      if (editBufferIsAllDigits(s))
+      {
+        int idx = findProgramLineIndex(atoi(s.buf));
+        if (idx >= 0) loadProgramLineToEdit(s, idx);
+      }
+      return EDIT_CONTINUE;
+    }
+    // EM_EDIT — commit + navigate to previous line
+    int oldLine = lastRecalledLineNum;
+    if (!commitEditedLine(s))
+    {
+      printError("* SYNTAX ERROR");
+      editEraseLine(s);
+      return EDIT_CONTINUE;
+    }
+    int idx = findProgramLineIndex(oldLine);
+    if (idx < 0) { editEraseLine(s); return EDIT_CONTINUE; }
+    if (idx > 0)
+    {
+      tiPrintChar('\n');
+      s.startCol = cursorCol;
+      s.startRow = cursorRow;
+      s.len = 0; s.pos = 0; s.buf[0] = '\0';
+      loadProgramLineToEdit(s, idx - 1);
+    }
+    else
+    {
+      editEraseLine(s);
+    }
+    return EDIT_CONTINUE;
+  }
+
+  if (c == 10)   // DOWN (FCTN+X)
+  {
+    if (!s.historyEnabled) return EDIT_CONTINUE;
+    if (editMode == EM_ENTRY)
+    {
+      if (editBufferIsAllDigits(s))
+      {
+        int idx = findProgramLineIndex(atoi(s.buf));
+        if (idx >= 0) loadProgramLineToEdit(s, idx);
+      }
+      return EDIT_CONTINUE;
+    }
+    int oldLine = lastRecalledLineNum;
+    if (!commitEditedLine(s))
+    {
+      printError("* SYNTAX ERROR");
+      editEraseLine(s);
+      return EDIT_CONTINUE;
+    }
+    int idx = findProgramLineIndex(oldLine);
+    if (idx < 0) { editEraseLine(s); return EDIT_CONTINUE; }
+    if (idx < programSize() - 1)
+    {
+      tiPrintChar('\n');
+      s.startCol = cursorCol;
+      s.startRow = cursorRow;
+      s.len = 0; s.pos = 0; s.buf[0] = '\0';
+      loadProgramLineToEdit(s, idx + 1);
+    }
+    else
+    {
+      editEraseLine(s);
+    }
+    return EDIT_CONTINUE;
+  }
+
+  return EDIT_CONTINUE;
+}
+
 } // namespace tihost

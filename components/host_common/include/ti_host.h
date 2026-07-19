@@ -27,6 +27,10 @@
 // LineEdit / EditResult / EditMode — needed by the editor primitives
 // this component now owns. Pulls in tiny types with no runtime deps.
 #include "line_editor.h"
+// MAX_INPUT_LEN — sizes the lastCommandLine REDO buffer + the editor
+// input buffer each host owns. Defined in tp_types.h alongside the
+// interpreter's other size constants.
+#include "tp_types.h"
 
 namespace tihost
 {
@@ -221,11 +225,20 @@ void drawCell(int col, int row);
 void refreshScreen();
 void redrawScreen();
 void scrollUp();
+void printLine(const char* s);
+void printError(const char* s);
+
+} // namespace tihost — closed early so the three global-scope
+  //   symbols below are properly at the top level. These are strong
+  //   overrides of weak symbols declared at global scope in the
+  //   interpreter's ti_platform.h; namespacing them would leave the
+  //   interpreter's link against ::tiPrintChar unresolved.
+
 void tiClearScreen();
 void tiPrintChar(char c);
 void tiPrintString(const char* s);
-void printLine(const char* s);
-void printError(const char* s);
+
+namespace tihost {
 
 // ---------------------------------------------------------------------------
 // Line editor primitives.
@@ -306,6 +319,27 @@ int  findProgramLineIndex(int lineNum);
 bool commitEditedLine(const LineEdit& s);
 void loadProgramLineToEdit(LineEdit& s, int idx);
 int  programSize();
+
+// ---------------------------------------------------------------------------
+// Editor session state + processEditChar (the big keybind dispatcher).
+//
+// lastCommandLine holds the most recently submitted line for REDO
+// (FCTN+8). processEditChar populates it on Enter; REDO restores it.
+//
+// NUMBER-mode state: cmdNumber (still per-host) sets these when the
+// user types `NUMBER [start[,incr]]`; editorBeginLine (still per-host
+// for now) pre-fills the prompt with the next auto-line-number;
+// processEditChar tests numModeActive on Enter to decide whether an
+// Enter-on-autofill-only should exit NUMBER mode instead of deleting
+// the auto-numbered line.
+// ---------------------------------------------------------------------------
+extern char lastCommandLine[MAX_INPUT_LEN + 1];
+extern bool numModeActive;
+extern int  numModeStart;
+extern int  numModeIncr;
+extern int  numModeNext;
+
+EditResult processEditChar(uint8_t c, LineEdit& s);
 
 // ---------------------------------------------------------------------------
 // Called once from the host's setup() after Serial + display are up.
