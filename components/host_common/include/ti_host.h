@@ -392,6 +392,22 @@ void paintBootPage1();
 void paintBootPage2();
 
 // ---------------------------------------------------------------------------
+// TI BASIC tokenizer + detokenizer (text ↔ tokens).
+//
+// Adopted from sunton (newer version with TOK_LINENUM + IMAGE literal
+// capture + `!` tail comments); box's older tokenizer is dropped.
+//
+// initTokenNames() must be called once at boot before detokenizeLine()
+// is used — it populates the 256-entry tokenNames[] lookup table.
+// tokenizeLine() writes into a caller-provided buffer, returns the
+// number of token bytes written or -1 on overflow.
+// ---------------------------------------------------------------------------
+void initTokenNames();
+int  tokenizeLine(const char* src, uint8_t* tokens, int maxLen);
+int  detokenizeLine(const uint8_t* tokens, int length, char* buf,
+                    int bufSize);
+
+// ---------------------------------------------------------------------------
 // Called once from the host's setup() after Serial + display are up.
 // Wires the host's config + display hooks into host_common, then
 // initializes screenBuf, palette, font tables, and interpreter callbacks.
