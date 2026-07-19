@@ -386,6 +386,129 @@ int  numModeStart  = 0;
 int  numModeIncr   = 0;
 int  numModeNext   = 0;
 
+// ---------------------------------------------------------------------------
+// Editor session buffers + editor prompt state.
+// ---------------------------------------------------------------------------
+char inputBuf[MAX_INPUT_LEN + 1] = {0};
+int  inputPos    = 0;
+bool inputReady  = false;
+
+static bool          s_editorCursorVisible = false;
+static unsigned long s_editorLastBlink     = 0;
+static constexpr unsigned long kEditorBlinkMs = 400;
+
+// historyEnabled = true — this is the top-level prompt, so REDO,
+// line-recall, and NUMBER-mode auto-fill are all live. INPUT-side
+// getInputLine spins its own LineEdit with historyEnabled = false.
+static LineEdit s_editorState = { inputBuf, MAX_INPUT_LEN, 0, 0, 0, 0, true };
+static bool     s_editorLineActive = false;
+
+void editorBeginLine()
+{
+  s_editorState.buf            = inputBuf;
+  s_editorState.maxLen         = MAX_INPUT_LEN;
+  s_editorState.len            = 0;
+  s_editorState.pos            = 0;
+  s_editorState.startCol       = cursorCol;
+  s_editorState.startRow       = cursorRow;
+  s_editorState.historyEnabled = true;
+  inputBuf[0] = '\0';
+  inputPos    = 0;
+  s_editorLineActive = true;
+
+  // NUMBER mode: pre-fill with the next auto line number + space.
+  if (numModeActive)
+  {
+    char numStr[8];
+    int n = snprintf(numStr, sizeof(numStr), "%d ", numModeNext);
+    for (int i = 0; i < n; i++)
+    {
+      editTypeChar(s_editorState, (uint8_t)numStr[i]);
+    }
+    numModeNext += numModeIncr;
+  }
+}
+
+void editorCursorTick()
+{
+  if (!s_editorLineActive) return;
+  unsigned long now = millis();
+  if (now - s_editorLastBlink >= kEditorBlinkMs)
+  {
+    s_editorCursorVisible = !s_editorCursorVisible;
+    editSyncCursor(s_editorState);
+    drawCursor(s_editorCursorVisible);
+    s_editorLastBlink = now;
+  }
+}
+
+void checkInput()
+{
+  if (!s_editorLineActive) editorBeginLine();
+  editorCursorTick();
+
+  int c;
+  while ((c = editorReadChar()) >= 0)
+  {
+    if (s_editorCursorVisible)
+    {
+      editSyncCursor(s_editorState);
+      drawCursor(false);
+      s_editorCursorVisible = false;
+    }
+    EditResult r = processEditChar((uint8_t)c, s_editorState);
+    inputPos = s_editorState.len;
+
+    if (r == EDIT_SUBMITTED)
+    {
+      inputReady = true;
+      s_editorLineActive = false;
+      return;
+    }
+    // EDIT_BROKEN at the top-level prompt: no running program to
+    // break, so CLEAR just stays where it is. Keep pumping input.
+  }
+}
+
+bool getInputLine(char* buf, int bufSize)
+{
+  LineEdit s = { buf, bufSize - 1, 0, 0, cursorCol, cursorRow, false };
+  buf[0] = '\0';
+
+  bool cursorVisible = false;
+  unsigned long lastBlink = 0;
+  const unsigned long kBlinkMs = 400;
+
+  const auto& d = getHostCommonDisplay();
+  while (true)
+  {
+    unsigned long now = millis();
+    if (now - lastBlink >= kBlinkMs)
+    {
+      cursorVisible = !cursorVisible;
+      editSyncCursor(s);
+      drawCursor(cursorVisible);
+      lastBlink = now;
+    }
+    if (d.hostKbTask) d.hostKbTask();
+
+    int c;
+    while ((c = editorReadChar()) >= 0)
+    {
+      if (cursorVisible)
+      {
+        editSyncCursor(s);
+        drawCursor(false);
+        cursorVisible = false;
+      }
+      EditResult r = processEditChar((uint8_t)c, s);
+      if (r == EDIT_SUBMITTED) return true;
+      if (r == EDIT_BROKEN)    return false;   // INPUT aborted
+    }
+    yield();
+  }
+}
+
 EditResult processEditChar(uint8_t c, LineEdit& s)
 {
   // ----- handled identically in both edit modes -----

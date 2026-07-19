@@ -128,6 +128,13 @@ struct TiDisplay
   // mapped to TI CHR$ codes by ble_keyboard.h). Null when the host
   // has no BLE keyboard (guition first pass).
   int  (*hostReadBleKey)();
+  // Optional per-tick BLE keyboard poll. Some BLE-Arduino ports
+  // require the host to explicitly pump NimBLE from the main thread
+  // (bleKbTask()); host_common calls this from the blocking
+  // getInputLine editor loop so BLE keys stay responsive while a
+  // BASIC INPUT statement is waiting. Null on hosts where the BLE
+  // stack polls itself in a background task (or where there's no BLE).
+  void (*hostKbTask)();
 };
 
 // ---------------------------------------------------------------------------
@@ -340,6 +347,30 @@ extern int  numModeIncr;
 extern int  numModeNext;
 
 EditResult processEditChar(uint8_t c, LineEdit& s);
+
+// ---------------------------------------------------------------------------
+// Editor prompt (the loop-driven line reader that produces `inputBuf`
+// for main.cpp's processInput dispatch).
+//
+// inputBuf / inputPos / inputReady are the interface between the
+// editor and the command dispatcher. checkInput sets inputReady=true
+// when the user presses Enter; the host loop reads inputBuf, calls
+// its command processor, then clears the flag for the next line.
+//
+// getInputLine is the blocking variant used by INPUT / LINPUT and
+// CAT/DIR pagination. Handles paste-buffer input + BLE keys +
+// cursor blink until Enter/BREAK, then returns the buffer to the
+// caller. Guards its own cursor state so it doesn't interfere with
+// the loop-driven checkInput blink.
+// ---------------------------------------------------------------------------
+extern char inputBuf[MAX_INPUT_LEN + 1];
+extern int  inputPos;
+extern bool inputReady;
+
+void editorBeginLine();
+void editorCursorTick();
+void checkInput();
+bool getInputLine(char* buf, int bufSize);
 
 // ---------------------------------------------------------------------------
 // Called once from the host's setup() after Serial + display are up.
