@@ -15,6 +15,7 @@ idf_component_register(
         "src/ti_host_render.cpp"
         "src/ti_host_text.cpp"
         "src/ti_host_editor.cpp"
+        "src/ti_host_boot.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES

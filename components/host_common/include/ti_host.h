@@ -373,6 +373,25 @@ void checkInput();
 bool getInputLine(char* buf, int bufSize);
 
 // ---------------------------------------------------------------------------
+// Boot screen.
+//
+// drawTexasLogo: redefines chars 129..137 with the TI logo tiles and
+//   places them in a 3x3 grid at (startRow, startCol). Public so
+//   paintBootPage1 can call it — hosts don't normally invoke it
+//   directly.
+//
+// paintBootPage1 / paintBootPage2: repaint the two boot pages using
+//   only shared symbols (fillBackground → hostFillBackground,
+//   hostFillRect for stripes, charPatterns + screenBuf + drawCell for
+//   text). Each host's showBootScreen() calls them around its own
+//   wait-for-key loop (per-host because of BLE keyboard mode + BLE
+//   pairing UI + webfiles poll variations).
+// ---------------------------------------------------------------------------
+void drawTexasLogo(int startRow, int startCol);
+void paintBootPage1();
+void paintBootPage2();
+
+// ---------------------------------------------------------------------------
 // Called once from the host's setup() after Serial + display are up.
 // Wires the host's config + display hooks into host_common, then
 // initializes screenBuf, palette, font tables, and interpreter callbacks.
