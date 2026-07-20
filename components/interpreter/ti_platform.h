@@ -27,7 +27,7 @@
 // (interpreter + both hosts). Displayed on the splash screen so any
 // running board self-identifies which build it has. Bump on every
 // shipped change. Keep "v" prefix + dot-separated semver.
-#define TI32_VERSION "v0.1.0"
+#define TI32_VERSION "v0.2.0"
 
 // ---------------------------------------------------------------------------
 // Cooperative yield — every long-running loop in the interpreter, file
